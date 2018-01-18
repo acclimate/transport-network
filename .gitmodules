@@ -1,0 +1,6 @@
+[submodule "lib/tqdm.cpp"]
+	path = lib/tqdm.cpp
+	url = git@github.com:swillner/tqdm.cpp.git
+[submodule "cmake"]
+	path = cmake
+	url = git@github.com:swillner/cmake-modules
