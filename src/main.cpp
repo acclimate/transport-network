@@ -40,6 +40,7 @@ using namespace netCDF::exceptions;
 #define TYPE_SEA    2
 
 
+
 inline double distance(const OGRPoint& p1, const OGRPoint& p2) {
     const auto R = 6371;
     const auto PI = 3.14159265;
@@ -81,11 +82,6 @@ int main(int argc, char* argv[]) {
         type_map.push_back("region");
         type_map.push_back("port");
         type_map.push_back("sea");
-        
-        //~ std::cout << type_map[0] << std::endl;
-        //~ std::cout << type_map[1] << std::endl;
-        //~ std::cout << type_map.size() << std::endl;
-        //~ std::cout << TYPE_COUNT << std::endl;
 
         std::cout << "begin" << std::endl;
         std::vector<std::string> ind;
@@ -114,51 +110,68 @@ int main(int argc, char* argv[]) {
             ind_sea.push_back(std::get<0>(c));
         } while (parser.next_row());
         
+        std::vector<std::string> adm_string;
+        adm_string.push_back("adm0");
+        adm_string.push_back("adm1");
         
-        GDALAllRegister();
-
-        const std::string shapefilename = argv[1];
-        const std::string layername = argv[2];
-
-        auto infile = static_cast<GDALDataset*>(GDALOpenEx(shapefilename.c_str(), GDAL_OF_VECTOR, nullptr, nullptr, nullptr));
-        if (!infile) {
-            throw std::runtime_error("could not open shape file");
-        }
-        OGRLayer* inlayer = infile->GetLayerByName(layername.c_str());
-        if (!inlayer) {
-            throw std::runtime_error("could not read layer from shape file");
-        }
-
-        const std::size_t size = inlayer->GetFeatureCount();
-        std::vector<OGRFeature*> features(size);
-        std::vector<OGRGeometry*> geometries(size);
-        std::vector<OGRPoint> centroids(size);
-        std::vector<std::string> ids(size);
-        std::vector<bool> connected(size, false);
-   
+        std::vector<std::string> coding_string;
+        adm_string.push_back("ISO");
+        adm_string.push_back("HASC-1");
+        
+        
+        
+        std::vector<OGRFeature*> features(0);
+        std::vector<OGRGeometry*> geometries(0);
+        std::vector<OGRPoint> centroids(0);
+        std::vector<std::string> ids(0);
+        std::vector<bool> connected(0,false);
+        
         
         std::ofstream file("graph.dot");
         file << "graph {\n";
+        GDALAllRegister();
+        const std::string shapefilename = argv[1];
+        auto infile = static_cast<GDALDataset*>(GDALOpenEx(shapefilename.c_str(), GDAL_OF_VECTOR, nullptr, nullptr, nullptr));
+        for (int part = 0; part < 2; part++) {
+            
+            //~ const std::string layername = argv[2];
+            std::string layername = adm_string[part];
+            if (!infile) {
+                throw std::runtime_error("could not open shape file");
+            }
+            OGRLayer* inlayer = infile->GetLayerByName(layername.c_str());
+            inlayer->ResetReading();
+            if (!inlayer) {
+                throw std::runtime_error("could not read layer from shape file");
+            }
+            const std::size_t length = inlayer->GetFeatureCount(); // ACHTUNG DA SIZE WICHTIG IST; MUSS ES WOANDERS ANGEPASST WERDEN
+            std::size_t starter = ids.size();
+            
+            features.resize(features.size() + length);
+            geometries.resize(geometries.size() + length);
+            centroids.resize(centroids.size() + length);
+            ids.resize(ids.size() + length);
+            connected.resize(connected.size() + length);
         {
 #ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
             tqdm::Params p;
-            p.desc = "Input";
+            p.desc = "Input " + std::to_string(part + 1);
             p.ascii = "";
             p.f = stdout;
-            tqdm::RangeTqdm<std::size_t> it{tqdm::RangeIterator<std::size_t>(size), tqdm::RangeIterator<std::size_t>(size, size), p};
+            tqdm::RangeTqdm<std::size_t> it{tqdm::RangeIterator<std::size_t>(length), tqdm::RangeIterator<std::size_t>(length, length), p};
 #endif
-
             inlayer->ResetReading();
 #pragma omp parallel for default(shared) schedule(guided)
-            for (std::size_t i = 0; i < size; ++i) {
+            for (std::size_t i = starter; i < ids.size(); ++i) {
                 OGRFeature* feature;
 #pragma omp critical(feature)
-                { feature = inlayer->GetFeature(i + 1); }
+                { feature = inlayer->GetFeature(i - starter  + 1); }
                 features[i] = feature;
-                OGRGeometry* geometry = feature->GetGeometryRef();  //->SimplifyPreserveTopology(0.001);
+                //~ OGRGeometry* geometry = feature->GetGeometryRef();  //->SimplifyPreserveTopology(0.001);
+                OGRGeometry* geometry = feature->GetGeometryRef()->SimplifyPreserveTopology(0.001);
                 geometry->Centroid(&centroids[i]);
                 geometries[i] = geometry;  //->ConvexHull();
-                std::string id = feature->GetFieldAsString(argv[3]);
+                std::string id = feature->GetFieldAsString("ISO");
                 if (id.empty()) {
                     id = std::to_string(i);
                 } else {
@@ -174,6 +187,8 @@ int main(int argc, char* argv[]) {
                 ids[i] = id;
                 ind.push_back(id);
                 type.push_back(0);
+                lat.push_back(centroids[i].getY());
+                lon.push_back(centroids[i].getX());
                 // std::cout << id << " " << centroids[i].getX() << " " << centroids[i].getY() << std::endl;
 #ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
                 ++it;
@@ -183,28 +198,47 @@ int main(int argc, char* argv[]) {
             it.close();
 #endif
         }
-        lat.resize(ind.size());
-        lon.resize(ind.size());
-
-
-        std::cout << "Finished reading ISO table" << std::endl;
+        }
+        const std::size_t size = ids.size();
         
         nvector<unsigned char,2> matrix(0,ind.size(),ind.size());
+        {
+#ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
+            tqdm::Params p;
+            p.desc = "Sea Matrix";
+            p.ascii = "";
+            p.f = stdout;
+            const auto total = ind_sea.size();
+            tqdm::RangeTqdm<std::size_t> it{tqdm::RangeIterator<std::size_t>(total), tqdm::RangeIterator<std::size_t>(total, total), p};
+#endif
+        
         std::ifstream infile_matrix("/home/kikula/Documents/p/Acclimate/Projekte/Infrastructure/Shipping_Routes/matrix.csv");
         csv::Parser parser2(infile_matrix);
         int k = 0;
         do {
+            const auto row = inside_number(ind_sea[k],ind);
             int p = 0;
             do {
-                matrix(inside_number(ind_sea[k],ind),inside_number(ind_sea[p],ind)) = parser2.read<unsigned char>();
+                const auto col = inside_number(ind_sea[p],ind);
+                matrix(row,col) = parser2.read<unsigned char>();
+                if (matrix(row,col)) {
+#pragma omp critical(foutput)
+                    { file << "    " << ind[row] << " -- " << ind[col] << ";\n" << std::flush; }
+                }
                 p++;
             } while (parser2.next_col());
             k++;
+#ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
+            ++it;
+#endif           
         } while (parser2.next_row());
         
-        std::cout << "Finished set up connection matrix" << std::endl;    
+#ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
+            it.close();
+#endif
+        }    
 
-
+        return 0 ;
         {
 #ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
             tqdm::Params p;
@@ -217,18 +251,17 @@ int main(int argc, char* argv[]) {
             const auto PORT = TYPE_PORT;
 #pragma omp parallel for default(shared) schedule(dynamic)
         for (std::size_t country = 0; country < ids.size(); country++) {
-            lat.at(inside_number(ids[country],ind)) =centroids[country].getY();
-            lon.at(inside_number(ids[country],ind)) =centroids[country].getX();
             OGRGeometry* geometry1 = geometries[country];
             const auto i = inside_number(ids[country], ind);
             for (std::size_t port = 0; port  < ind.size() ; port++) {
                 if (type[port] == PORT) {
-                    // std::cout << ind_land[country] << "  " << ind[port] << "  " << (int) type[port] << "   " << port <<  std::endl;
                     OGRPoint geometry2 = OGRPoint(lon[port],lat[port]);
                     bool inside = 
-                                (ids[country] == "DEU") && 
+                                //(ids[country] == "DEU") && 
                                 geometry1->Contains(&geometry2);
                     if (inside) {
+#pragma omp critical(foutput)
+                    { file << "    " << ind[i] << " -- " << ind[port] << ";\n" << std::flush; }
                         matrix(i,port) = 1;
                         matrix(port,i) = 1;
                     }
@@ -273,7 +306,9 @@ int main(int argc, char* argv[]) {
                 // OGRFeature* feature2 = features[j];
                 const std::string& id1 = ids[i];  // feature1->GetFieldAsString("ISO");
                 const std::string& id2 = ids[j];  // feature2->GetFieldAsString("ISO");
-                bool touches =     (id1 == "DEU" && id2 == "FRA") && geometry1->Intersects(geometry2);// || geometry1->Touches(geometry2));
+                bool touches =     
+                            //~ (id1 == "DEU" && id2 == "FRA") &&
+                            geometry1->Intersects(geometry2);// || geometry1->Touches(geometry2));
                 if (touches) {
                     connected[i] = true;
                     connected[j] = true;
@@ -302,9 +337,9 @@ int main(int argc, char* argv[]) {
         }
         file << "}\n";
         file.close();
-
+        
         try {
-            NcFile test("routes.nc", NcFile::replace,NcFile::nc4);
+            NcFile test("routes_test.nc", NcFile::replace,NcFile::nc4);
 
             NcDim indDim = test.addDim("index", ind.size());
             NcDim typDim = test.addDim("typeindex", TYPE_COUNT);
