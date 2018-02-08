@@ -20,13 +20,25 @@
 #include <ogrsf_frmts.h>
 #include <algorithm>
 #include <fstream>
+#include <sstream>
 #include <iostream>
+#include <netcdf>
 #include <stdexcept>
 #include <vector>
+#include "nvector.h"
 #include "version.h"
+#include "csv-parser.h"
 #ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
 #include "tqdm/tqdm.h"
 #endif
+using namespace netCDF;
+using namespace netCDF::exceptions;
+
+#define TYPE_COUNT  3
+#define TYPE_REGION 0
+#define TYPE_PORT   1
+#define TYPE_SEA    2
+
 
 inline double distance(const OGRPoint& p1, const OGRPoint& p2) {
     const auto R = 6371;
@@ -37,16 +49,72 @@ inline double distance(const OGRPoint& p1, const OGRPoint& p2) {
     return 2 * R * std::atan2(std::sqrt(a), std::sqrt(1 - a));
 }
 
-static inline void rtrim(std::string &s) {
+static inline void rtrim(std::string& s) {
     s.erase(std::find_if(s.rbegin(), s.rend(), [](int c) {
                                                    return !std::isspace(c);
                                                }).base(), s.end());
 }
 
+template <typename T>
+bool inside_bool(const T& object,const std::vector<T>& list) {
+    auto res = std::find(list.begin(), list.end(), object);
+    return res != list.end();
+}
+
+template <typename T>
+std::size_t inside_number(const T& object,const std::vector<T>& list) {
+    auto res = std::find(list.begin(), list.end(), object);
+    if (res == list.end()) {
+        throw std::runtime_error("fuck");
+    } else {
+        return res - list.begin();
+    }
+}
+
+
 int main(int argc, char* argv[]) {
+    
 #ifndef DEBUG
     try {
 #endif
+        std::vector<const char*> type_map;
+        type_map.push_back("region");
+        type_map.push_back("port");
+        type_map.push_back("sea");
+        
+        //~ std::cout << type_map[0] << std::endl;
+        //~ std::cout << type_map[1] << std::endl;
+        //~ std::cout << type_map.size() << std::endl;
+        //~ std::cout << TYPE_COUNT << std::endl;
+
+        std::cout << "begin" << std::endl;
+        std::vector<std::string> ind;
+        std::vector<std::string> ind_sea;
+        std::vector<double>     lat;
+        std::vector<double>     lon;
+        std::vector<unsigned char> type;
+        std::vector<const char*> ind_c;
+        
+        std::ifstream infile_sea("/home/kikula/Documents/p/Acclimate/Projekte/Infrastructure/Shipping_Routes/water_objects.csv");
+        csv::Parser parser(infile_sea);
+        
+        do {
+            const auto c = parser.read<std::string, double, double,std::string>();
+            if (std::get<3>(c) == "sea" || std::get<3>(c) == "port") {             
+                ind.push_back(std::get<0>(c));
+                lat.push_back(std::get<1>(c));
+                lon.push_back(std::get<2>(c));
+                if ( std::get<3>(c) == "sea") {
+                    type.push_back(2);
+                }
+                if ( std::get<3>(c) == "port") {
+                    type.push_back(1);
+                }
+            }
+            ind_sea.push_back(std::get<0>(c));
+        } while (parser.next_row());
+        
+        
         GDALAllRegister();
 
         const std::string shapefilename = argv[1];
@@ -67,7 +135,8 @@ int main(int argc, char* argv[]) {
         std::vector<OGRPoint> centroids(size);
         std::vector<std::string> ids(size);
         std::vector<bool> connected(size, false);
-
+   
+        
         std::ofstream file("graph.dot");
         file << "graph {\n";
         {
@@ -103,6 +172,8 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 ids[i] = id;
+                ind.push_back(id);
+                type.push_back(0);
                 // std::cout << id << " " << centroids[i].getX() << " " << centroids[i].getY() << std::endl;
 #ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
                 ++it;
@@ -110,6 +181,65 @@ int main(int argc, char* argv[]) {
             }
 #ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
             it.close();
+#endif
+        }
+        lat.resize(ind.size());
+        lon.resize(ind.size());
+
+
+        std::cout << "Finished reading ISO table" << std::endl;
+        
+        nvector<unsigned char,2> matrix(0,ind.size(),ind.size());
+        std::ifstream infile_matrix("/home/kikula/Documents/p/Acclimate/Projekte/Infrastructure/Shipping_Routes/matrix.csv");
+        csv::Parser parser2(infile_matrix);
+        int k = 0;
+        do {
+            int p = 0;
+            do {
+                matrix(inside_number(ind_sea[k],ind),inside_number(ind_sea[p],ind)) = parser2.read<unsigned char>();
+                p++;
+            } while (parser2.next_col());
+            k++;
+        } while (parser2.next_row());
+        
+        std::cout << "Finished set up connection matrix" << std::endl;    
+
+
+        {
+#ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
+            tqdm::Params p;
+            p.desc = "Ports";
+            p.ascii = "";
+            p.f = stdout;
+            const auto total = ids.size();
+            tqdm::RangeTqdm<std::size_t> it{tqdm::RangeIterator<std::size_t>(total), tqdm::RangeIterator<std::size_t>(total, total), p};
+#endif
+            const auto PORT = TYPE_PORT;
+#pragma omp parallel for default(shared) schedule(dynamic)
+        for (std::size_t country = 0; country < ids.size(); country++) {
+            lat.at(inside_number(ids[country],ind)) =centroids[country].getY();
+            lon.at(inside_number(ids[country],ind)) =centroids[country].getX();
+            OGRGeometry* geometry1 = geometries[country];
+            const auto i = inside_number(ids[country], ind);
+            for (std::size_t port = 0; port  < ind.size() ; port++) {
+                if (type[port] == PORT) {
+                    // std::cout << ind_land[country] << "  " << ind[port] << "  " << (int) type[port] << "   " << port <<  std::endl;
+                    OGRPoint geometry2 = OGRPoint(lon[port],lat[port]);
+                    bool inside = 
+                                (ids[country] == "DEU") && 
+                                geometry1->Contains(&geometry2);
+                    if (inside) {
+                        matrix(i,port) = 1;
+                        matrix(port,i) = 1;
+                    }
+                }
+            }
+#ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
+            ++it;
+#endif
+        }
+#ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
+        it.close();
 #endif
         }
 
@@ -131,7 +261,7 @@ int main(int argc, char* argv[]) {
                 }
             }
             std::random_shuffle(std::begin(pairs), std::end(pairs));
-
+        
 #pragma omp parallel for default(shared) schedule(dynamic)
             for (std::size_t k = 0; k < pairs.size(); ++k) {
                 const auto p = pairs[k];
@@ -143,14 +273,14 @@ int main(int argc, char* argv[]) {
                 // OGRFeature* feature2 = features[j];
                 const std::string& id1 = ids[i];  // feature1->GetFieldAsString("ISO");
                 const std::string& id2 = ids[j];  // feature2->GetFieldAsString("ISO");
-                bool touches =
-                    //(distance(centroids[i], centroids[j]) < 4000) &&
-                        geometry1->Intersects(geometry2);// || geometry1->Touches(geometry2));
+                bool touches =     (id1 == "DEU" && id2 == "FRA") && geometry1->Intersects(geometry2);// || geometry1->Touches(geometry2));
                 if (touches) {
                     connected[i] = true;
                     connected[j] = true;
 #pragma omp critical(foutput)
                     { file << "    " << id1 << " -- " << id2 << ";\n" << std::flush; }
+                    matrix(inside_number(ids[i],ind),inside_number(ids[j],ind)) = 1;
+                    matrix(inside_number(ids[j],ind),inside_number(ids[i],ind)) = 1;
                 }
 #ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
 #pragma omp critical(output)
@@ -166,9 +296,47 @@ int main(int argc, char* argv[]) {
                 file << "    // " << ids[i] << " unconnected\n";
             }
         }
-
+        
+        for (std::size_t i = 0; i < ind.size(); i++) {
+            ind_c.push_back(ind[i].c_str());
+        }
         file << "}\n";
         file.close();
+
+        try {
+            NcFile test("routes.nc", NcFile::replace,NcFile::nc4);
+
+            NcDim indDim = test.addDim("index", ind.size());
+            NcDim typDim = test.addDim("typeindex", TYPE_COUNT);
+
+            NcVar indVar = test.addVar("index",  ncString, indDim);
+            NcVar mapVar = test.addVar("typeindex",  ncString, typDim);
+            NcVar typVar = test.addVar("type",  ncByte, indDim);
+            NcVar latVar = test.addVar("latitude", ncDouble, indDim);
+            NcVar lonVar = test.addVar("longitude",  ncDouble, indDim);
+            NcVar matVar = test.addVar("connections", ncByte, {indDim,indDim}) ;
+
+            indVar.putAtt("units", "");
+            mapVar.putAtt("units", "");
+            typVar.putAtt("units", "");
+            latVar.putAtt("units", "degrees_north");
+            lonVar.putAtt("units", "degrees_east");
+            matVar.putAtt("units", "");
+            
+            indVar.putVar(&ind_c[0]);
+            mapVar.putVar(&type_map[0]);
+            typVar.putVar(&type[0]);
+            latVar.putVar(&lat[0]);
+            lonVar.putVar(&lon[0]);
+            matVar.putVar(&matrix.data()[0]);
+            std::cout << "for the win" << std::endl;
+        
+
+        }
+        catch(NcException& e)
+        {
+            std::cout << e.what() <<  std::endl;
+        }
 
         {
 #ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
@@ -190,14 +358,16 @@ int main(int argc, char* argv[]) {
             it.close();
 #endif
         }
-
+        
         GDALClose(infile);
-
+        
 #ifndef DEBUG
     } catch (std::exception& ex) {
         std::cerr << ex.what() << std::endl;
         return 255;
     }
 #endif
+    
+
     return 0;
 }
