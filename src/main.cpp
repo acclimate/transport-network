@@ -168,7 +168,7 @@ int main(int argc, char* argv[]) {
                             }
                         }
                         features.push_back(feature);
-                        OGRGeometry* geometry = feature->GetGeometryRef()->SimplifyPreserveTopology(0.001);
+                        OGRGeometry* geometry = feature->GetGeometryRef()->SimplifyPreserveTopology(input["resolution"].as<double>());
                         geometries.push_back(geometry);
                         OGRPoint centroid;
                         geometry->Centroid(&centroid);
