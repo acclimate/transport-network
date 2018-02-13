@@ -207,7 +207,7 @@ int main(int argc, char* argv[]) {
             tqdm::RangeTqdm<std::size_t> it{tqdm::RangeIterator<std::size_t>(total), tqdm::RangeIterator<std::size_t>(total, total), p};
 #endif
 
-            std::ifstream infile_matrix("/home/kikula/Documents/p/Acclimate/Projekte/Infrastructure/Shipping_Routes/matrix.csv");
+            std::ifstream infile_matrix(input["sea_matrix"].as<std::string>());
             csv::Parser parser2(infile_matrix);
             int k = 0;
             do {
