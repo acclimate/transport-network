@@ -32,11 +32,6 @@
 #include <tqdm/tqdm.h>
 #endif
 
-#define TYPE_REGION 0
-#define TYPE_PORT 1
-#define TYPE_SEA 2
-#define TYPE_COUNT 3
-
 class ProgressBar {
   protected:
 #ifdef ACCLIMATE_TRANSPORT_WITH_TQDM
@@ -66,23 +61,28 @@ class ProgressBar {
     }
 };
 
+enum Type { REGION = 0, PORT = 1, SEA = 2 };
+std::vector<const char*> type_map = {"region", "port", "sea"};
+
 class Location {
   public:
     std::string id;
     std::string name;
     double lat;
     double lon;
-    unsigned char type;
+    Type type;
     OGRFeature* feature;
     OGRGeometry* geometry;
+    std::size_t level;
     Location(std::string id_p,
              std::string name_p,
              double lat_p,
              double lon_p,
-             unsigned char type_p,
+             Type type_p,
              OGRFeature* feature_p = nullptr,
-             OGRGeometry* geometry_p = nullptr)
-        : id(id_p), name(name_p), lat(lat_p), lon(lon_p), type(type_p), feature(feature_p), geometry(geometry_p) {}
+             OGRGeometry* geometry_p = nullptr,
+             std::size_t level_p = 0)
+        : id(id_p), name(name_p), lat(lat_p), lon(lon_p), type(type_p), feature(feature_p), geometry(geometry_p), level(level_p) {}
 };
 
 static void print_usage(const char* program_name) {
@@ -140,19 +140,17 @@ int main(int argc, char* argv[]) {
         }
 
         const settings::SettingsNode iso_map = settings["iso_mapping"];
+        const auto resolution = input["resolution"].as<double>();
+        const auto port_threshold = input["port_threshold"].as<double>();
+
+        std::vector<Location> locations;
+        std::unordered_map<std::string, std::size_t> indices;
 
         // Read regions to ignore
         std::set<std::string> ignores;
         for (const auto& parameters : settings["ignore"].as_sequence()) {
             ignores.insert(parameters.template as<std::string>());
         }
-
-        // std::vector<std::unique_ptr<Location>> locations;
-        std::vector<Location> locations;
-        std::unordered_map<std::string, std::size_t> indices;
-
-        const auto resolution = input["resolution"].as<double>();
-        const auto port_threshold = input["port_threshold"].as<double>();
 
         // Read regions
         GDALDataset* infile;
@@ -163,8 +161,8 @@ int main(int argc, char* argv[]) {
             if (!infile) {
                 throw std::runtime_error("could not open shape file");
             }
-            for (int part = 0; part < input["level"].as<int>(); ++part) {
-                std::string layername = "adm" + std::to_string(part);
+            for (std::size_t level = 0; level < input["level"].as<std::size_t>(); ++level) {
+                std::string layername = "adm" + std::to_string(level);
                 OGRLayer* inlayer = infile->GetLayerByName(layername.c_str());
                 if (!inlayer) {
                     throw std::runtime_error("could not read layer from shape file");
@@ -199,44 +197,53 @@ int main(int argc, char* argv[]) {
                             }
                         }
                         const std::string& name = feature->GetFieldAsString(name_field.c_str());
-                        OGRGeometry* geometry = feature->GetGeometryRef()->SimplifyPreserveTopology(resolution);
+                        OGRGeometry* geometry;
+                        if (resolution > 0) {
+                            geometry = feature->GetGeometryRef()->SimplifyPreserveTopology(resolution);
+                        } else {
+                            geometry = feature->GetGeometryRef();
+                        }
                         OGRPoint centroid;
                         geometry->Centroid(&centroid);
 #pragma omp critical(locations)
                         {
                             indices.emplace(id, locations.size());
-                            locations.push_back(Location{id, name, centroid.getY(), centroid.getX(), TYPE_REGION, feature, geometry});
+                            locations.push_back(Location{id, name, centroid.getY(), centroid.getX(), Type::REGION, feature, geometry, level});
                         }
                     }
                     progress.tick();
-                    // break;
                 }
             }
         }
 
         const auto shapefile_regions_count = locations.size();
 
+        // Read ports
         for (const auto& p : settings["ports"].as_map()) {
             indices.emplace(p.first, locations.size());
-            locations.push_back({p.first, p.second["name"].as<std::string>(), p.second["lat"].as<double>(), p.second["lon"].as<double>(), TYPE_PORT});
+            locations.push_back({p.first, p.second["name"].as<std::string>(), p.second["lat"].as<double>(), p.second["lon"].as<double>(), Type::PORT});
         }
 
         const auto ports_count = locations.size() - shapefile_regions_count;
 
+        // Read seas
         for (const auto& s : settings["seas"].as_map()) {
             indices.emplace(s.first, locations.size());
-            locations.push_back({s.first, s.second["name"].as<std::string>(), s.second["lat"].as<double>(), s.second["lon"].as<double>(), TYPE_SEA});
+            locations.push_back({s.first, s.second["name"].as<std::string>(), s.second["lat"].as<double>(), s.second["lon"].as<double>(), Type::SEA});
         }
 
+        // Read additional regions
         if (settings.has("additional_regions")) {
             for (const auto& p : settings["additional_regions"].as_map()) {
                 indices.emplace(p.first, locations.size());
-                locations.push_back({p.first, p.second["name"].as<std::string>(), p.second["lat"].as<double>(), p.second["lon"].as<double>(), TYPE_REGION});
+                locations.push_back({p.first, p.second["name"].as<std::string>(), p.second["lat"].as<double>(), p.second["lon"].as<double>(), Type::REGION});
             }
         }
 
+        // All location have been read, create connections
         std::vector<unsigned char> matrix(locations.size() * locations.size(), 0);
 
+        // Read additional connections
         if (settings.has("additional_connections")) {
             for (const auto& location : settings["additional_connections"].as_map()) {
                 const auto i = indices.find(location.first);
@@ -257,6 +264,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // Read connections of seas and ports
         for (const auto& type : {"seas", "ports"}) {
             for (const auto& location : settings[type].as_map()) {
                 const auto i = indices.find(location.first);
@@ -275,6 +283,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // Find regions of ports
         {
             OGRPoint null_point = OGRPoint(0, 0);
             ProgressBar progress("Ports", ports_count);
@@ -307,6 +316,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // Find connected regions
         {
             const auto total = shapefile_regions_count * (shapefile_regions_count - 1) / 2;
             ProgressBar progress("Region network", total);
@@ -334,8 +344,25 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        std::vector<const char*> type_map = {"region", "port", "sea"};
+        // Find unconnected locations
+        for (std::size_t i = 0; i < locations.size(); ++i) {
+            const auto& location = locations[i];
+            bool connected = false;
+            bool same_level_connected = false;
+            for (std::size_t j = 0; j < locations.size(); ++j) {
+                if (matrix[i * locations.size() + j]) {
+                    connected = true;
+                    same_level_connected = location.level == locations[j].level;
+                }
+            }
+            if (!connected) {
+                std::cout << "Warning: No connections for " << location.name << std::endl;
+            } else if (!same_level_connected) {
+                std::cout << "Warning: No connections on same level for " << location.name << std::endl;
+            }
+        }
 
+        // YAML output
         if (settings["output"].has("yaml")) {
             std::ofstream file(settings["output"]["yaml"].as<std::string>());
             for (std::size_t i = 0; i < locations.size(); ++i) {
@@ -357,6 +384,7 @@ int main(int argc, char* argv[]) {
             file.close();
         }
 
+        // graphdot output
         if (settings["output"].has("graphdot")) {
             std::ofstream file(settings["output"]["graphdot"].as<std::string>());
             file << "graph {\n";
@@ -374,13 +402,14 @@ int main(int argc, char* argv[]) {
             file.close();
         }
 
+        // NetCDF output
         if (settings["output"].has("netcdf")) {
             netCDF::NcFile file(settings["output"]["netcdf"].as<std::string>(), netCDF::NcFile::replace, netCDF::NcFile::nc4);
 
             auto index_dim = file.addDim("index", locations.size());
 
             {
-                auto type_dim = file.addDim("typeindex", TYPE_COUNT);
+                auto type_dim = file.addDim("typeindex", type_map.size());
                 auto var = file.addVar("typeindex", netCDF::ncString, type_dim);
                 var.putVar(&type_map[0]);
             }
@@ -445,13 +474,14 @@ int main(int argc, char* argv[]) {
             file.close();
         }
 
-        // clean up before closing the file
+        // Clean up before closing the file
         for (auto& location : locations) {
             if (location.feature) {
                 OGRFeature::DestroyFeature(location.feature);
             }
         }
         locations.clear();
+
         GDALClose(infile);
 
 #ifndef DEBUG
