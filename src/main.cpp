@@ -304,12 +304,14 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        std::vector<const char*> type_map = {"region", "port", "sea"};
+
         if (settings["output"].has("yaml")) {
             std::ofstream file(settings["output"]["yaml"].as<std::string>());
             for (std::size_t i = 0; i < locations.size(); ++i) {
                 const auto& location = locations[i];
                 file << location.id << ":\n  name: " << location.name << "\n  lat: " << location.lat << "\n  lon: " << location.lon
-                     << "\n  type: " << location.type << "\n  connections:";
+                     << "\n  type: " << type_map[location.type] << "\n  connections:";
                 bool connected = false;
                 for (std::size_t j = 0; j < locations.size(); ++j) {
                     if (matrix[i * locations.size() + j]) {
@@ -350,7 +352,6 @@ int main(int argc, char* argv[]) {
             {
                 auto type_dim = file.addDim("typeindex", TYPE_COUNT);
                 auto var = file.addVar("typeindex", netCDF::ncString, type_dim);
-                std::vector<const char*> type_map = {"region", "port", "sea"};
                 var.putVar(&type_map[0]);
             }
 
