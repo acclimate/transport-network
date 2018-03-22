@@ -296,10 +296,6 @@ int main(int argc, char* argv[]) {
                 if (touches) {
                     matrix[i * locations.size() + j] = 1;
                     matrix[j * locations.size() + i] = 1;
-                    if (locations[i].id == "CN.HA" || locations[j].id == "CN.HA") {
-#pragma omp critical(output)
-                        { std::cout << locations[i].id << " - " << locations[j].id << std::endl; }
-                    }
                 }
                 progress.tick();
             }
