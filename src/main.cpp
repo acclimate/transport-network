@@ -85,27 +85,57 @@ class Location {
         : id(id_p), name(name_p), lat(lat_p), lon(lon_p), type(type_p), feature(feature_p), geometry(geometry_p) {}
 };
 
-double distance(const OGRPoint& a, const OGRPoint& b) {
-    const auto R = 6371;
-    const auto PI = 3.14159265;
-    const auto latsin = std::sin((b.getY() - a.getY()) * PI / 360);
-    const auto lonsin = std::sin((b.getX() - a.getX()) * PI / 360);
-
-    const auto a1 = latsin * latsin + cos(b.getY() * PI / 180) * cos(a.getY() * PI / 180) * lonsin * lonsin;
-    return 2 * R * std::atan2(std::sqrt(a1), std::sqrt(1 - a1));
+static void print_usage(const char* program_name) {
+    std::cerr << "Transport preprocessing for the acclimate model\n"
+                 "Version: " ACCLIMATE_TRANSPORT_VERSION
+                 "\n\n"
+                 "Authors: Sven Willner <sven.willner@pik-potsdam.de>\n"
+                 "         Kilian Kuhla <kilian.kuhla@pik-potsdam.de>\n"
+                 "\n"
+                 "Usage:   "
+              << program_name
+              << " (<option> | <settingsfile>)\n"
+                 "Options:\n"
+                 "  -h, --help     Print this help text\n"
+                 "  -v, --version  Print version"
+              << std::endl;
 }
 
 int main(int argc, char* argv[]) {
 #ifndef DEBUG
     try {
 #endif
-        std::ifstream settings_file(argv[1]);
-        if (!settings_file) {
-            throw std::runtime_error("cannot open settings file");
+        if (argc != 2) {
+            print_usage(argv[0]);
+            return 1;
         }
-        settings::SettingsNode settings(settings_file);
+        const std::string arg = argv[1];
+        if (arg.length() > 1 && arg[0] == '-') {
+            if (arg == "--version" || arg == "-v") {
+                std::cout << ACCLIMATE_TRANSPORT_VERSION << std::endl;
+                return 0;
+            } else if (arg == "--help" || arg == "-h") {
+                print_usage(argv[0]);
+                return 0;
+            } else {
+                print_usage(argv[0]);
+                return 1;
+            }
+        }
+        settings::SettingsNode settings;
+        if (arg == "-") {
+            std::cin >> std::noskipws;
+            settings = settings::SettingsNode(std::cin);
+        } else {
+            std::ifstream settings_file(arg);
+            if (!settings_file) {
+                throw std::runtime_error("cannot open settings file");
+            }
+            settings = settings::SettingsNode(settings_file);
+        }
+
         const settings::SettingsNode& input = settings["input"];
-        if (!settings["output"].has("graphdot") && !settings["output"].has("netcdf")) {
+        if (!settings["output"].has("graphdot") && !settings["output"].has("netcdf") && !settings["output"].has("yaml")) {
             throw std::runtime_error("no output defined");
         }
 

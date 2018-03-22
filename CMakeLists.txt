@@ -15,7 +15,7 @@ target_compile_options(acclimate_transport PRIVATE -std=c++11)
 set_advanced_cpp_warnings(acclimate_transport)
 set_build_type_specifics(acclimate_transport)
 add_git_version(acclimate_transport
-  FALLBACK_VERSION 1.0.0)
+  FALLBACK_VERSION 0.1.0)
 
 option(PARALLELIZATION "" ON)
 if(PARALLELIZATION)
