@@ -142,10 +142,13 @@ int main(int argc, char* argv[]) {
                 inlayer->ResetReading();
                 const std::size_t length = inlayer->GetFeatureCount();
                 std::string encoding;
+                std::string name_field;
                 if (layername == "adm0") {
                     encoding = "ISO";
+                    name_field = "NAME_ENGLISH";
                 } else if (layername == "adm1") {
                     encoding = "HASC_1";
+                    name_field = "NAME_1";
                 }
                 ProgressBar progress("Input " + layername, length);
                 inlayer->ResetReading();
@@ -165,7 +168,7 @@ int main(int argc, char* argv[]) {
                                 id = iso_quant + "." + (n < 10 ? "0" : "") + std::to_string(n);
                             }
                         }
-                        const std::string& name = feature->GetFieldAsString("NAME_ENGLISH");
+                        const std::string& name = feature->GetFieldAsString(name_field.c_str());
                         OGRGeometry* geometry = feature->GetGeometryRef()->SimplifyPreserveTopology(resolution);
                         OGRPoint centroid;
                         geometry->Centroid(&centroid);
