@@ -196,7 +196,14 @@ int main(int argc, char* argv[]) {
                                 id = iso_quant + "." + (n < 10 ? "0" : "") + std::to_string(n);
                             }
                         }
-                        const std::string& name = feature->GetFieldAsString(name_field.c_str());
+                        const std::string& rawname = feature->GetFieldAsString(name_field.c_str());
+                        std::string name;
+                        const auto p = rawname.find_first_of("\n\r");
+                        if (p != std::string::npos) {
+                            name = rawname.substr(0, p);
+                        } else {
+                            name = rawname;
+                        }
                         OGRGeometry* geometry;
                         if (resolution > 0) {
                             geometry = feature->GetGeometryRef()->SimplifyPreserveTopology(resolution);
@@ -285,32 +292,34 @@ int main(int argc, char* argv[]) {
 
         // Find regions of ports
         {
-            OGRPoint null_point = OGRPoint(0, 0);
             ProgressBar progress("Ports", ports_count);
 #pragma omp parallel for default(shared) schedule(dynamic)
             for (std::size_t port = shapefile_regions_count; port < shapefile_regions_count + ports_count; ++port) {
                 const auto& port_location = locations[port];
+                OGRPoint null_point = OGRPoint(0, 0);
                 OGRSpatialReference target_ref;
                 target_ref.SetAE(port_location.lat, port_location.lon, 0, 0);
                 OGRPoint port_point = OGRPoint(port_location.lon, port_location.lat);
                 bool region_found = false;
                 for (std::size_t region = 0; region < shapefile_regions_count; ++region) {
                     if (locations[region].geometry->Distance(&port_point) < 90) {
-                        OGRGeometry* geometry = locations[region].geometry->clone();
-                        geometry->transformTo(&target_ref);
+                        OGRGeometry* geometry;
+                        OGRCoordinateTransformation* transformation;
+                        geometry = locations[region].geometry->clone();
+                        transformation = OGRCreateCoordinateTransformation(geometry->getSpatialReference(), &target_ref);
+                        geometry->transform(transformation);
                         const auto dist = geometry->Distance(&null_point) / 1000;
-                        bool inside = dist < port_threshold;
-                        if (inside) {
+                        OGRGeometryFactory::destroyGeometry(geometry);
+                        if (dist < port_threshold) {
                             region_found = true;
                             matrix[region * locations.size() + port] = 1;
                             matrix[port * locations.size() + region] = 1;
                         }
-                        OGR_G_DestroyGeometry(geometry);
                     }
                 }
                 if (!region_found) {
 #pragma omp critical(output)
-                    { std::cout << "Warning: no region found for port " << port_location.name << std::endl; }
+                    { std::cout << "Warning: no region found for port " << port_location.id << " (" << port_location.name << ")" << std::endl; }
                 }
                 progress.tick();
             }
@@ -352,13 +361,13 @@ int main(int argc, char* argv[]) {
             for (std::size_t j = 0; j < locations.size(); ++j) {
                 if (matrix[i * locations.size() + j]) {
                     connected = true;
-                    same_level_connected = location.level == locations[j].level;
+                    same_level_connected |= location.level == locations[j].level;
                 }
             }
             if (!connected) {
-                std::cout << "Warning: No connections for " << location.name << std::endl;
+                std::cout << "Warning: No connections for " << location.id << " (" << location.name << ")" << std::endl;
             } else if (!same_level_connected) {
-                std::cout << "Warning: No connections on same level for " << location.name << std::endl;
+                std::cout << "Warning: No connections on same level for " << location.id << " (" << location.name << ")" << std::endl;
             }
         }
 
