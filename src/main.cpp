@@ -361,7 +361,7 @@ int main(int argc, char* argv[]) {
             for (std::size_t j = 0; j < locations.size(); ++j) {
                 if (matrix[i * locations.size() + j]) {
                     connected = true;
-                    same_level_connected |= location.level == locations[j].level;
+                    same_level_connected = same_level_connected || (locations[j].type != Type::REGION) || (location.level == locations[j].level);
                 }
             }
             if (!connected) {
