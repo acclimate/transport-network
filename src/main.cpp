@@ -44,7 +44,7 @@ class ProgressBar {
         tqdm::Params p;
         p.desc = description;
         p.ascii = "";
-        p.f = stdout;
+        //p.f = stdout;
         it.reset(new tqdm::RangeTqdm<std::size_t>{tqdm::RangeIterator<std::size_t>(length), tqdm::RangeIterator<std::size_t>(length, length), p});
 #endif
     }
@@ -353,21 +353,55 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Find unconnected locations
-        for (std::size_t i = 0; i < locations.size(); ++i) {
-            const auto& location = locations[i];
-            bool connected = false;
-            bool same_level_connected = false;
-            for (std::size_t j = 0; j < locations.size(); ++j) {
-                if (matrix[i * locations.size() + j]) {
-                    connected = true;
-                    same_level_connected = same_level_connected || (locations[j].type != Type::REGION) || (location.level == locations[j].level);
+        // Show subnets
+        {
+            std::vector<int> subnet(locations.size(), -1);
+            int subnet_id = 0;
+            while(true) {
+                bool subnet_found = false;
+                std::size_t size = 0;
+                std::size_t level;
+                for (std::size_t i = 0; i < locations.size(); ++i) {
+                    if (subnet[i] < 0 && locations[i].type == Type::REGION) {
+                        std::cout << "Subnet:" << std::endl;
+                        subnet_found = true;
+                        level = locations[i].level;
+                        subnet[i] = subnet_id;
+                        std::cout << "  " << locations[i].id << " " << locations[i].name << std::endl;
+                        ++size;
+                        ++subnet_id;
+                        break;
+                    }
                 }
-            }
-            if (!connected) {
-                std::cout << "Warning: No connections for " << location.id << " (" << location.name << ")" << std::endl;
-            } else if (!same_level_connected) {
-                std::cout << "Warning: No connections on same level for " << location.id << " (" << location.name << ")" << std::endl;
+                if (!subnet_found) {
+                    break;
+                }
+
+                while(true) {
+                    bool unconnected_found = false;
+                    for (std::size_t i = 0; i < locations.size(); ++i) {
+                        if (subnet[i] == subnet_id - 1) {
+                            for (std::size_t j = 0; j < locations.size(); ++j) {
+                                if (matrix[i * locations.size() + j] && subnet[j] < 0 && (locations[j].type != Type::REGION || level == locations[j].level)) {
+                                    unconnected_found = true;
+                                    subnet[j] = subnet_id - 1;
+                                    std::cout << "  " << locations[j].id << " " << locations[j].name << std::endl;
+                                    ++size;
+                                }
+                            }
+                        }
+                    }
+                    if (!unconnected_found) {
+                        std::cout << "  (size: " << size << ")" << std::endl;
+                        break;
+                    }
+                }
+
+                for (std::size_t i = 0; i < locations.size(); ++i) {
+                    if (locations[i].type != Type::REGION) {
+                        subnet[i] = -1;
+                    }
+                }
             }
         }
 
@@ -492,6 +526,8 @@ int main(int argc, char* argv[]) {
         locations.clear();
 
         GDALClose(infile);
+
+        std::cout << "Done" << std::endl;
 
 #ifndef DEBUG
     } catch (std::exception& ex) {
